@@ -7,6 +7,7 @@ math.
 """
 
 import argparse
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -19,22 +20,51 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
 
+from contract.v0 import COLUMNS as CONTRACT_COLUMNS  # noqa: E402
 from gnc_analysis import mrp  # noqa: E402
 
-SIGMA_TRUTH_COLS = ["truth_sigma_1", "truth_sigma_2", "truth_sigma_3"]
-SIGMA_EST_COLS = ["est_sigma_1", "est_sigma_2", "est_sigma_3"]
-R_TRUTH_COLS = ["truth_r_1", "truth_r_2", "truth_r_3"]
-R_EST_COLS = ["est_r_1", "est_r_2", "est_r_3"]
-V_TRUTH_COLS = ["truth_v_1", "truth_v_2", "truth_v_3"]
-V_EST_COLS = ["est_v_1", "est_v_2", "est_v_3"]
+
+def _axis_cols(prefix: str) -> list[str]:
+    """The three per-axis columns for prefix (e.g. "truth_sigma"), checked against the v0
+    contract's own column list so a rename there cannot silently drift out of sync here."""
+    cols = [f"{prefix}_{axis}" for axis in (1, 2, 3)]
+    missing = [c for c in cols if c not in CONTRACT_COLUMNS]
+    if missing:
+        raise ValueError(f"columns {missing} are not in the v0 contract")
+    return cols
+
+
+SIGMA_TRUTH_COLS = _axis_cols("truth_sigma")
+SIGMA_EST_COLS = _axis_cols("est_sigma")
+R_TRUTH_COLS = _axis_cols("truth_r")
+R_EST_COLS = _axis_cols("est_r")
+V_TRUTH_COLS = _axis_cols("truth_v")
+V_EST_COLS = _axis_cols("est_v")
 
 
 def load_campaign(campaign_dir: Path) -> list[pd.DataFrame]:
-    """Load every run_*.csv in campaign_dir, sorted by filename."""
-    paths = sorted(Path(campaign_dir).glob("run_*.csv"))
-    if not paths:
-        raise ValueError(f"no run_*.csv files found in {campaign_dir}")
-    runs = [pd.read_csv(p) for p in paths]
+    """Load every run named in campaign_dir/manifest.json, in run order. Loading by the
+    manifest rather than a directory glob means a stray or stale file on disk that the
+    manifest doesn't name is never pulled into the analysis."""
+    campaign_dir = Path(campaign_dir)
+    manifest_path = campaign_dir / "manifest.json"
+    if not manifest_path.is_file():
+        raise ValueError(f"{manifest_path}: manifest.json does not exist")
+
+    manifest = json.loads(manifest_path.read_text())
+    runs_meta = manifest.get("runs")
+    if not runs_meta:
+        raise ValueError(f"{manifest_path}: 'runs' is missing or empty")
+
+    runs = []
+    for entry in sorted(runs_meta, key=lambda e: e["run"]):
+        run_path = campaign_dir / entry["file"]
+        if not run_path.is_file():
+            raise ValueError(
+                f"{manifest_path}: run {entry['run']} names missing file {entry['file']}"
+            )
+        runs.append(pd.read_csv(run_path))
+
     lengths = {len(df) for df in runs}
     if len(lengths) != 1:
         raise ValueError(f"runs under {campaign_dir} have differing sample counts: {lengths}")

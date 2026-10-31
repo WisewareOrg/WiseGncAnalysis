@@ -116,16 +116,26 @@ def check_campaign(campaign_dir: str | Path) -> list[str]:
         problems.append(f"{manifest_path}: 'runs' is missing or empty")
         return problems
 
+    named_files: set[str] = set()
     for entry in runs:
         run_id = entry.get("run")
         file_name = entry.get("file")
         if not file_name:
             problems.append(f"{manifest_path}: run {run_id} has no 'file' entry")
             continue
+        named_files.add(file_name)
         run_path = campaign_dir / file_name
         if not run_path.is_file():
             problems.append(f"{manifest_path}: run {run_id} names missing file {file_name}")
             continue
         problems.extend(check_run_file(run_path))
+
+    on_disk = {p.name for p in campaign_dir.glob("run_*.csv")}
+    orphans = sorted(on_disk - named_files)
+    if orphans:
+        problems.append(
+            f"{campaign_dir}: file(s) present but not referenced by any run in "
+            f"manifest.json: {orphans}"
+        )
 
     return problems

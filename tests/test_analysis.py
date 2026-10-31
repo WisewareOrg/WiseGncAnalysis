@@ -1,7 +1,22 @@
+import pandas as pd
 import pytest
-from gnc_analysis.imu_dead_reckoning import analyze
+from gnc_analysis.imu_dead_reckoning import analyze, load_campaign
 
 from tests.synthetic import build_campaign
+
+
+def test_load_campaign_ignores_file_not_in_manifest(tmp_path):
+    campaign_dir = build_campaign(tmp_path / "campaign", n_runs=2, n_steps=10)
+    # A stray file the manifest never named, carrying a contract defect, sitting right next to
+    # the real runs. load_campaign must read the manifest, not glob the directory, so this file
+    # is never pulled into the analysis.
+    df = pd.read_csv(campaign_dir / "run_0000.csv")
+    df.loc[0, "t_s"] = 1
+    df.to_csv(campaign_dir / "run_0002.csv", index=False)
+
+    runs = load_campaign(campaign_dir)
+
+    assert len(runs) == 2
 
 
 def test_fitted_growth_rates_match_injected_drift(tmp_path):

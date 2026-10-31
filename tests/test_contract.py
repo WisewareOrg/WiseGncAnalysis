@@ -46,3 +46,17 @@ def test_missing_file_named_in_manifest_fails(tmp_path):
     problems = check_campaign(tmp_path)
     assert problems
     assert any("run_0001.csv" in p for p in problems)
+
+
+def test_orphan_file_not_in_manifest_fails(tmp_path):
+    build_campaign(tmp_path, n_runs=2)
+    # A stray file the manifest never named, carrying its own contract defect (t_s doesn't
+    # start at 0) — check_campaign must flag the file itself, not just defer to a defect inside
+    # it that check_run_file happens to catch.
+    df = pd.read_csv(tmp_path / "run_0000.csv")
+    df.loc[0, "t_s"] = 1
+    df.to_csv(tmp_path / "run_0002.csv", index=False)
+
+    problems = check_campaign(tmp_path)
+    assert problems
+    assert any("run_0002.csv" in p for p in problems)
