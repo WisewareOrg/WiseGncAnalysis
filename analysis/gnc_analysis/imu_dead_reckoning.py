@@ -1,9 +1,14 @@
-"""Attitude-error analysis against the recorded-run contract v0: for every run,
-e(t) = 4*atan|sigma_truth (-) sigma_est| in degrees; across the ensemble, a summary and a plot.
-No dependency on WiseGncDesign or Basilisk; see mrp.py for the local MRP math.
+"""Attitude, position and velocity error analysis against the recorded-run contract v0.
+
+For every run: attitude error e(t) = 4*atan|sigma_truth (-) sigma_est| in degrees, position error
+|r_truth - r_est| in m, velocity error |v_truth - v_est| in m/s. Across the ensemble: a summary
+and a plot per metric. No dependency on WiseGncDesign or Basilisk; see mrp.py for the local MRP
+math.
 """
 
 import argparse
+from collections.abc import Callable
+from dataclasses import dataclass
 from pathlib import Path
 
 import matplotlib
@@ -18,6 +23,10 @@ from gnc_analysis import mrp  # noqa: E402
 
 SIGMA_TRUTH_COLS = ["truth_sigma_1", "truth_sigma_2", "truth_sigma_3"]
 SIGMA_EST_COLS = ["est_sigma_1", "est_sigma_2", "est_sigma_3"]
+R_TRUTH_COLS = ["truth_r_1", "truth_r_2", "truth_r_3"]
+R_EST_COLS = ["est_r_1", "est_r_2", "est_r_3"]
+V_TRUTH_COLS = ["truth_v_1", "truth_v_2", "truth_v_3"]
+V_EST_COLS = ["est_v_1", "est_v_2", "est_v_3"]
 
 
 def load_campaign(campaign_dir: Path) -> list[pd.DataFrame]:
@@ -44,47 +53,53 @@ def attitude_error_deg(df: pd.DataFrame) -> np.ndarray:
     return np.degrees(mrp.angle(err))
 
 
-def growth_rate_deg_s(t_s: np.ndarray, rms_deg: np.ndarray) -> float:
-    """Slope of a linear fit of ensemble RMS error vs time, in deg/s."""
-    slope, _ = np.polyfit(t_s, rms_deg, 1)
+def _vector_error(df: pd.DataFrame, truth_cols: list[str], est_cols: list[str]) -> np.ndarray:
+    truth = df[truth_cols].to_numpy()
+    est = df[est_cols].to_numpy()
+    return np.linalg.norm(truth - est, axis=-1)
+
+
+def position_error_m(df: pd.DataFrame) -> np.ndarray:
+    """Per-sample position error magnitude, in m, for one run."""
+    return _vector_error(df, R_TRUTH_COLS, R_EST_COLS)
+
+
+def velocity_error_m_s(df: pd.DataFrame) -> np.ndarray:
+    """Per-sample velocity error magnitude, in m/s, for one run."""
+    return _vector_error(df, V_TRUTH_COLS, V_EST_COLS)
+
+
+def growth_rate(t_s: np.ndarray, rms: np.ndarray) -> float:
+    """Slope of a linear fit of ensemble RMS error vs time."""
+    slope, _ = np.polyfit(t_s, rms, 1)
     return float(slope)
 
 
-def analyze(campaign_dir: Path, out_dir: Path) -> None:
-    """Load every run in campaign_dir, score attitude error, and write summary.md and
-    attitude_error.png into out_dir."""
-    campaign_dir = Path(campaign_dir)
-    out_dir = Path(out_dir)
-    out_dir.mkdir(parents=True, exist_ok=True)
+@dataclass(frozen=True)
+class Metric:
+    label: str
+    unit: str
+    rate_unit: str
+    compute: Callable[[pd.DataFrame], np.ndarray]
+    figure_name: str
 
-    runs = load_campaign(campaign_dir)
-    t_s = runs[0]["t_s"].to_numpy()
-    errors = np.stack([attitude_error_deg(df) for df in runs], axis=0)  # (n_runs, n_steps)
 
-    mean_t = np.mean(errors, axis=0)
-    std_t = np.std(errors, axis=0)
-    rms_t = np.sqrt(np.mean(errors**2, axis=0))
+METRICS = [
+    Metric("attitude error", "deg", "deg/s", attitude_error_deg, "attitude_error.png"),
+    Metric("position error", "m", "m/s", position_error_m, "position_error.png"),
+    Metric("velocity error", "m/s", "m/s^2", velocity_error_m_s, "velocity_error.png"),
+]
 
-    final = errors[:, -1]
-    final_mean = float(np.mean(final))
-    final_std = float(np.std(final))
-    final_max = float(np.max(final))
-    rate = growth_rate_deg_s(t_s, rms_t)
-    duration_s = float(t_s[-1] - t_s[0])
 
-    summary = (
-        "# Attitude-error summary\n"
-        "\n"
-        f"- Runs: {len(runs)}\n"
-        f"- Duration: {duration_s:.1f} s\n"
-        f"- Final error mean: {final_mean:.4f} deg\n"
-        f"- Final error std: {final_std:.4f} deg\n"
-        f"- Final error 3-sigma: {3 * final_std:.4f} deg\n"
-        f"- Final error max: {final_max:.4f} deg\n"
-        f"- Error growth rate (linear fit of ensemble RMS vs time): {rate:.6f} deg/s\n"
-    )
-    (out_dir / "summary.md").write_text(summary)
-
+def _plot_metric(
+    out_dir: Path,
+    metric: Metric,
+    t_s: np.ndarray,
+    errors: np.ndarray,
+    mean_t: np.ndarray,
+    std_t: np.ndarray,
+    n_runs: int,
+) -> None:
     fig, ax = plt.subplots(figsize=(8, 5))
     for e in errors:
         ax.plot(t_s, e, color="0.75", linewidth=0.5)
@@ -92,17 +107,63 @@ def analyze(campaign_dir: Path, out_dir: Path) -> None:
     ax.plot(t_s, mean_t + 3 * std_t, color="C0", linewidth=1.5, linestyle="--", label="±3σ")
     ax.plot(t_s, mean_t - 3 * std_t, color="C0", linewidth=1.5, linestyle="--")
     ax.set_xlabel("t [s]")
-    ax.set_ylabel("attitude error [deg]")
-    ax.set_title(f"Attitude error, {len(runs)} runs")
+    ax.set_ylabel(f"{metric.label} [{metric.unit}]")
+    ax.set_title(f"{metric.label.capitalize()}, {n_runs} runs")
     ax.legend()
     fig.tight_layout()
-    fig.savefig(out_dir / "attitude_error.png", dpi=150)
+    fig.savefig(out_dir / metric.figure_name, dpi=150)
     plt.close(fig)
+
+
+def analyze(campaign_dir: Path, out_dir: Path) -> None:
+    """Load every run in campaign_dir, score attitude/position/velocity error, and write
+    summary.md and one figure per metric into out_dir."""
+    campaign_dir = Path(campaign_dir)
+    out_dir = Path(out_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    runs = load_campaign(campaign_dir)
+    t_s = runs[0]["t_s"].to_numpy()
+    duration_s = float(t_s[-1] - t_s[0])
+
+    summary_lines = [
+        "# Attitude, position and velocity error summary",
+        "",
+        f"- Runs: {len(runs)}",
+        f"- Duration: {duration_s:.1f} s",
+    ]
+
+    for metric in METRICS:
+        errors = np.stack([metric.compute(df) for df in runs], axis=0)  # (n_runs, n_steps)
+        mean_t = np.mean(errors, axis=0)
+        std_t = np.std(errors, axis=0)
+        rms_t = np.sqrt(np.mean(errors**2, axis=0))
+
+        final = errors[:, -1]
+        final_mean = float(np.mean(final))
+        final_std = float(np.std(final))
+        final_max = float(np.max(final))
+        rate = growth_rate(t_s, rms_t)
+
+        summary_lines += [
+            "",
+            f"## {metric.label.capitalize()}",
+            f"- Final mean: {final_mean:.4f} {metric.unit}",
+            f"- Final std: {final_std:.4f} {metric.unit}",
+            f"- Final 3-sigma: {3 * final_std:.4f} {metric.unit}",
+            f"- Final max: {final_max:.4f} {metric.unit}",
+            f"- Growth rate (linear fit of ensemble RMS vs time): {rate:.6f} {metric.rate_unit}",
+        ]
+
+        _plot_metric(out_dir, metric, t_s, errors, mean_t, std_t, len(runs))
+
+    (out_dir / "summary.md").write_text("\n".join(summary_lines) + "\n")
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Analyze a recorded-run campaign's attitude error against the v0 contract."
+        description="Analyze a recorded-run campaign's attitude, position and velocity error "
+        "against the v0 contract."
     )
     parser.add_argument("campaign_dir", type=Path)
     parser.add_argument("--out", type=Path, required=True)

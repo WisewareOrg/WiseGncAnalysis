@@ -17,8 +17,11 @@ A header row followed by one data row per recorded sample, columns in exactly th
 | `t_s` | s | Sample time, strictly increasing, starting at 0 |
 | `truth_sigma_1`, `truth_sigma_2`, `truth_sigma_3` | MRP (dimensionless) | True attitude, body wrt inertial, σ_BN |
 | `truth_omega_1`, `truth_omega_2`, `truth_omega_3` | rad/s | True body-frame angular rate |
+| `truth_r_1`, `truth_r_2`, `truth_r_3` | m | True inertial position |
+| `truth_v_1`, `truth_v_2`, `truth_v_3` | m/s | True inertial velocity |
 | `est_sigma_1`, `est_sigma_2`, `est_sigma_3` | MRP (dimensionless) | Estimated attitude, body wrt inertial, σ_BN |
-| `est_dv_1`, `est_dv_2`, `est_dv_3` | m/s | Estimated accumulated ΔV, inertial frame |
+| `est_r_1`, `est_r_2`, `est_r_3` | m | Estimated inertial position |
+| `est_v_1`, `est_v_2`, `est_v_3` | m/s | Estimated inertial velocity |
 | `gyro_1`, `gyro_2`, `gyro_3` | rad/s | Recorded gyro output, body frame |
 | `accel_1`, `accel_2`, `accel_3` | m/s² | Recorded accelerometer output, body frame |
 
