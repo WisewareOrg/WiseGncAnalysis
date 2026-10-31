@@ -60,7 +60,8 @@ columns match the table above by name and order, it has at least one data row, `
 and is strictly increasing, and no column holds a `NaN`. It returns the list of problems found;
 an empty list means the file conforms.
 
-`check_campaign(campaign_dir) -> list[str]` checks a whole campaign: `manifest.json` exists and
-parses, its `contract_version` is `0`, every run it names has a file in the directory, and every
-such file passes `check_run_file`. It returns the combined list of problems; an empty list means
-the campaign conforms.
+`check_campaign(campaign_dir) -> list[str]` checks a whole campaign in both directions:
+`manifest.json` exists and parses, its `contract_version` is `0`, every run it names has a file
+in the directory and that file passes `check_run_file`, and conversely every `run_*.csv` present
+in the directory is named by some run in the manifest. It returns the combined list of problems;
+an empty list means the campaign conforms and nothing on disk is unaccounted for.

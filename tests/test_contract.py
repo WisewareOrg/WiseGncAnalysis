@@ -1,7 +1,12 @@
+import re
+from pathlib import Path
+
 import pandas as pd
 
-from contract.v0 import check_campaign, check_run_file
+from contract.v0 import COLUMNS, check_campaign, check_run_file
 from tests.synthetic import build_campaign
+
+README_PATH = Path(__file__).resolve().parents[1] / "contract" / "README.md"
 
 
 def test_good_campaign_conforms(tmp_path):
@@ -60,3 +65,15 @@ def test_orphan_file_not_in_manifest_fails(tmp_path):
     problems = check_campaign(tmp_path)
     assert problems
     assert any("run_0002.csv" in p for p in problems)
+
+
+def test_readme_column_table_matches_columns():
+    columns_from_readme = []
+    for line in README_PATH.read_text().splitlines():
+        line = line.strip()
+        if not line.startswith("| `"):
+            continue
+        column_cell = line.split("|")[1]
+        columns_from_readme.extend(re.findall(r"`([^`]+)`", column_cell))
+
+    assert columns_from_readme == COLUMNS

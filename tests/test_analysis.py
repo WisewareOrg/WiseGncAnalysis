@@ -19,6 +19,19 @@ def test_load_campaign_ignores_file_not_in_manifest(tmp_path):
     assert len(runs) == 2
 
 
+def test_load_campaign_rejects_mismatched_time_base(tmp_path):
+    campaign_dir = build_campaign(tmp_path / "campaign", n_runs=2, n_steps=10)
+    # Same sample count as every other run, but a different t_s grid — the length check alone
+    # would miss this; load_campaign must also check the time base itself.
+    run_path = campaign_dir / "run_0001.csv"
+    df = pd.read_csv(run_path)
+    df["t_s"] = df["t_s"] + 0.5
+    df.to_csv(run_path, index=False)
+
+    with pytest.raises(ValueError, match="time base"):
+        load_campaign(campaign_dir)
+
+
 def test_fitted_growth_rates_match_injected_drift(tmp_path):
     attitude_drift_rate_deg_s = 2.0
     position_drift_rate_m_s = 0.5

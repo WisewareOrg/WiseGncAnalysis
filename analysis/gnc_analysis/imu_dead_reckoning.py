@@ -25,12 +25,14 @@ from gnc_analysis import mrp  # noqa: E402
 
 
 def _axis_cols(prefix: str) -> list[str]:
-    """The three per-axis columns for prefix (e.g. "truth_sigma"), checked against the v0
-    contract's own column list so a rename there cannot silently drift out of sync here."""
-    cols = [f"{prefix}_{axis}" for axis in (1, 2, 3)]
-    missing = [c for c in cols if c not in CONTRACT_COLUMNS]
-    if missing:
-        raise ValueError(f"columns {missing} are not in the v0 contract")
+    """The three per-axis columns for prefix (e.g. "truth_sigma"), picked out of the v0
+    contract's own column list — contract.v0.COLUMNS is the only place these names are spelled,
+    so a rename there cannot silently drift out of sync here."""
+    cols = [c for c in CONTRACT_COLUMNS if c.startswith(f"{prefix}_")]
+    if len(cols) != 3:
+        raise ValueError(
+            f"expected 3 columns with prefix {prefix!r} in the v0 contract, found {cols}"
+        )
     return cols
 
 
@@ -68,6 +70,15 @@ def load_campaign(campaign_dir: Path) -> list[pd.DataFrame]:
     lengths = {len(df) for df in runs}
     if len(lengths) != 1:
         raise ValueError(f"runs under {campaign_dir} have differing sample counts: {lengths}")
+
+    reference_t_s = runs[0]["t_s"].to_numpy()
+    for i, df in enumerate(runs[1:], start=1):
+        if not np.allclose(df["t_s"].to_numpy(), reference_t_s, rtol=0, atol=1e-9):
+            raise ValueError(
+                f"runs under {campaign_dir} do not share a common t_s time base "
+                f"(run index {i} differs from run 0)"
+            )
+
     return runs
 
 
