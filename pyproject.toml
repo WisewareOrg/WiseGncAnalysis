@@ -5,7 +5,6 @@ description = "Attitude, position and velocity error analysis for recorded GNC r
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",
-    "pandas>=2.2",
     "matplotlib>=3.9",
     "h5py>=3.11",
 ]
