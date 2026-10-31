@@ -1,5 +1,5 @@
-"""Attitude, position and velocity error analysis against the recorded-run contract v0 (one
-HDF5 campaign file; see contract/README.md).
+"""Attitude, position and velocity error analysis over recorded runs (see runs.py for what a
+run file must contain).
 
 For every run: attitude error e(t) = 4*atan|sigma_truth (-) sigma_est| in degrees, position error
 |r_truth - r_est| in m, velocity error |v_truth - v_est| in m/s. Across the ensemble: a summary
@@ -19,11 +19,11 @@ matplotlib.use("Agg")
 
 import matplotlib.pyplot as plt  # noqa: E402
 
-from contract.v0 import RunArrays, load_campaign  # noqa: E402
 from gnc_analysis import mrp  # noqa: E402
+from gnc_analysis.runs import Run, load_campaign, load_run  # noqa: E402
 
 
-def attitude_error_deg(run: RunArrays) -> np.ndarray:
+def attitude_error_deg(run: Run) -> np.ndarray:
     """Per-sample attitude error angle, in degrees, for one run."""
     err = mrp.subtract(run.truth_sigma_BN, run.est_sigma_BN)
     over_one = np.linalg.norm(err, axis=-1) > 1.0
@@ -36,12 +36,12 @@ def _vector_error(truth: np.ndarray, est: np.ndarray) -> np.ndarray:
     return np.linalg.norm(truth - est, axis=-1)
 
 
-def position_error_m(run: RunArrays) -> np.ndarray:
+def position_error_m(run: Run) -> np.ndarray:
     """Per-sample position error magnitude, in m, for one run."""
     return _vector_error(run.truth_r_N, run.est_r_N)
 
 
-def velocity_error_m_s(run: RunArrays) -> np.ndarray:
+def velocity_error_m_s(run: Run) -> np.ndarray:
     """Per-sample velocity error magnitude, in m/s, for one run."""
     return _vector_error(run.truth_v_N, run.est_v_N)
 
@@ -57,7 +57,7 @@ class Metric:
     label: str
     unit: str
     rate_unit: str
-    compute: Callable[[RunArrays], np.ndarray]
+    compute: Callable[[Run], np.ndarray]
     figure_name: str
 
 
@@ -85,43 +85,29 @@ def _plot_metric(
     ax.plot(t_s, mean_t - 3 * std_t, color="C0", linewidth=1.5, linestyle="--")
     ax.set_xlabel("t [s]")
     ax.set_ylabel(f"{metric.label} [{metric.unit}]")
-    ax.set_title(f"{metric.label.capitalize()}, {n_runs} runs")
+    ax.set_title(f"{metric.label.capitalize()}, {n_runs} run(s)")
     ax.legend()
     fig.tight_layout()
     fig.savefig(out_dir / metric.figure_name, dpi=150)
     plt.close(fig)
 
 
-def _load_runs(campaign_path: Path) -> list[RunArrays]:
-    """Load every run from campaign_path, checked for one shared sample count and time base
-    (load_campaign itself just yields; the per-time-step ensemble stats below need runs that
-    line up by time, not merely by index)."""
-    runs = list(load_campaign(campaign_path))
-    if not runs:
-        raise ValueError(f"no runs found in {campaign_path}")
-
-    lengths = {len(r.t_s) for r in runs}
-    if len(lengths) != 1:
-        raise ValueError(f"runs in {campaign_path} have differing sample counts: {lengths}")
-
-    reference_t_s = runs[0].t_s
-    for i, r in enumerate(runs[1:], start=1):
-        if not np.allclose(r.t_s, reference_t_s, rtol=0, atol=1e-9):
-            raise ValueError(
-                f"runs in {campaign_path} do not share a common t_s time base "
-                f"(run index {i} differs from run 0)"
-            )
-    return runs
+def _load_runs(path: Path) -> list[Run]:
+    """Load one run (path is a .h5 file) or an ensemble (path is a directory of run_*.h5)."""
+    path = Path(path)
+    if path.is_dir():
+        return load_campaign(path)
+    return [load_run(path)]
 
 
-def analyze(campaign_path: Path, out_dir: Path) -> None:
-    """Load every run in campaign_path, score attitude/position/velocity error, and write
+def analyze(path: Path, out_dir: Path) -> None:
+    """Load the run or campaign at path, score attitude/position/velocity error, and write
     summary.md and one figure per metric into out_dir."""
-    campaign_path = Path(campaign_path)
+    path = Path(path)
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    runs = _load_runs(campaign_path)
+    runs = _load_runs(path)
     t_s = runs[0].t_s
     duration_s = float(t_s[-1] - t_s[0])
 
@@ -161,13 +147,13 @@ def analyze(campaign_path: Path, out_dir: Path) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Analyze a recorded-run campaign's attitude, position and velocity error "
-        "against the v0 contract."
+        description="Analyze one run or a directory of runs for attitude, position and "
+        "velocity error."
     )
-    parser.add_argument("campaign_path", type=Path, help="path to campaign.h5")
+    parser.add_argument("path", type=Path, help="a run_<NNNN>.h5 file, or a directory of them")
     parser.add_argument("--out", type=Path, required=True)
     args = parser.parse_args()
-    analyze(args.campaign_path, args.out)
+    analyze(args.path, args.out)
 
 
 if __name__ == "__main__":

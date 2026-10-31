@@ -1,7 +1,7 @@
 [project]
 name = "gnc-analysis"
 version = "0.1.0"
-description = "Analysis against the recorded-run contract: attitude-error scoring for GNC campaigns."
+description = "Attitude, position and velocity error analysis for recorded GNC runs."
 requires-python = ">=3.12"
 dependencies = [
     "numpy>=2.0",
@@ -18,7 +18,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["analysis/gnc_analysis", "contract"]
+packages = ["analysis/gnc_analysis"]
 
 [dependency-groups]
 dev = [

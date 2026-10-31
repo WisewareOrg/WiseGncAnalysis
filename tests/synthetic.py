@@ -1,11 +1,9 @@
-"""Synthetic recorded-run campaigns, used by both the contract tests and the analysis test."""
+"""Synthetic run files, used by both the loader tests and the analysis test."""
 
 from pathlib import Path
 
 import h5py
 import numpy as np
-
-from contract.v0 import CONTRACT_VERSION
 
 TRUTH_OMEGA = np.array([0.017, 0.017, 0.017])  # ~1 deg/s per axis
 ATTITUDE_ERROR_AXIS = np.array([1.0, 0.0, 0.0])
@@ -69,8 +67,44 @@ def _run_arrays(
     }
 
 
-def build_campaign(
+def build_run(
     path: Path,
+    case: int = 0,
+    n_steps: int = 60,
+    dt: float = 1.0,
+    attitude_drift_rate_deg_s: float = 2.0,
+    position_drift_rate_m_s: float = 0.5,
+    seed: int = 0,
+    producer: str = "synthetic-test",
+) -> Path:
+    """Write a single run_<NNNN>.h5 at path, with attitude error growing at
+    attitude_drift_rate_deg_s and position error growing linearly at position_drift_rate_m_s.
+    Returns path."""
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    rng = np.random.default_rng(seed)
+    arrays = _run_arrays(n_steps, dt, attitude_drift_rate_deg_s, position_drift_rate_m_s, rng)
+
+    with h5py.File(path, "w") as f:
+        f.attrs["producer"] = producer
+        f.attrs["created_utc"] = "2026-10-31T00:00:00Z"
+        f.attrs["case"] = case
+        f.attrs["seed"] = seed
+        f.attrs["versions_bsk"] = "synthetic-test"
+        f.attrs["versions_gnc_algorithms"] = "synthetic-test"
+        f.attrs["versions_wise_dynamics"] = "synthetic-test"
+        f.attrs["draw_sigma0"] = np.zeros(3)
+        f.attrs["draw_omega0"] = TRUTH_OMEGA
+
+        for rel_path, data in arrays.items():
+            dataset = f.create_dataset(rel_path, data=data.astype(np.float64))
+            dataset.attrs["units"] = UNITS[rel_path]
+
+    return path
+
+
+def build_campaign(
+    directory: Path,
     n_runs: int = 5,
     n_steps: int = 60,
     dt: float = 1.0,
@@ -79,36 +113,21 @@ def build_campaign(
     seed: int = 0,
     producer: str = "synthetic-test",
 ) -> Path:
-    """Write a contract-v0-conformant campaign.h5 of n_runs runs, each with attitude error
-    growing at attitude_drift_rate_deg_s and position error growing linearly at
-    position_drift_rate_m_s. Returns path."""
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    rng = np.random.default_rng(seed)
+    """Write n_runs run_<NNNN>.h5 files into directory, each via build_run with a distinct case
+    and seed. Returns directory."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
 
-    with h5py.File(path, "w") as f:
-        f.attrs["contract_version"] = CONTRACT_VERSION
-        f.attrs["producer"] = producer
-        f.attrs["created_utc"] = "2026-10-31T00:00:00Z"
-        f.attrs["seed"] = seed
-        f.attrs["runs"] = n_runs
-        f.attrs["versions_bsk"] = "synthetic-test"
-        f.attrs["versions_gnc_algorithms"] = "synthetic-test"
-        f.attrs["versions_wise_dynamics"] = "synthetic-test"
+    for i in range(n_runs):
+        build_run(
+            directory / f"run_{i:04d}.h5",
+            case=i,
+            n_steps=n_steps,
+            dt=dt,
+            attitude_drift_rate_deg_s=attitude_drift_rate_deg_s,
+            position_drift_rate_m_s=position_drift_rate_m_s,
+            seed=seed + i,
+            producer=producer,
+        )
 
-        runs_group = f.create_group("runs")
-        for i in range(n_runs):
-            arrays = _run_arrays(
-                n_steps, dt, attitude_drift_rate_deg_s, position_drift_rate_m_s, rng
-            )
-            run_group = runs_group.create_group(f"{i:04d}")
-            run_group.attrs["case"] = i
-            run_group.attrs["seed"] = seed + i
-            run_group.attrs["draw_sigma0"] = np.zeros(3)
-            run_group.attrs["draw_omega0"] = TRUTH_OMEGA
-
-            for rel_path, data in arrays.items():
-                dataset = run_group.create_dataset(rel_path, data=data.astype(np.float64))
-                dataset.attrs["units"] = UNITS[rel_path]
-
-    return path
+    return directory
