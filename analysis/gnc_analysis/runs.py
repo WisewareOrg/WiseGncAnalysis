@@ -33,8 +33,8 @@ class RunDataError(Exception):
 @dataclass(frozen=True)
 class Run:
     path: Path
-    case: int | None
-    seed: int | None
+    case: int
+    seed: int
     draws: dict[str, np.ndarray]
     versions: dict[str, str]
     t_s: np.ndarray
@@ -70,7 +70,8 @@ def _read_dataset(f: h5py.File, path: Path, rel_path: str, expected_units: str) 
 
 def load_run(path: str | Path) -> Run:
     """Load one run_<NNNN>.h5. Reads each dataset in DATASETS by name, checks its `units`
-    attribute, rejects NaN, and requires t_s strictly increasing from 0. Extra datasets and
+    attribute, rejects NaN, and requires t_s strictly increasing from 0; requires the root attrs
+    `case` and `seed`. `draw_*` and `versions_*` attrs are read best-effort. Extra datasets and
     attributes are ignored. Raises RunDataError naming the file and the dataset, attribute or
     unit at fault."""
     path = Path(path)
@@ -95,8 +96,12 @@ def load_run(path: str | Path) -> Run:
         if not_increasing_from_zero:
             raise RunDataError(f"{path}: t_s is not strictly increasing from 0")
 
-        case = int(f.attrs["case"]) if "case" in f.attrs else None
-        seed = int(f.attrs["seed"]) if "seed" in f.attrs else None
+        if "case" not in f.attrs:
+            raise RunDataError(f"{path}: missing root attr 'case'")
+        if "seed" not in f.attrs:
+            raise RunDataError(f"{path}: missing root attr 'seed'")
+        case = int(f.attrs["case"])
+        seed = int(f.attrs["seed"])
         draws = {
             name.removeprefix("draw_"): np.asarray(value)
             for name, value in f.attrs.items()

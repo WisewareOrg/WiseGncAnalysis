@@ -53,6 +53,24 @@ def test_nan_raises(tmp_path):
         load_run(path)
 
 
+def test_missing_case_attr_raises(tmp_path):
+    path = build_run(tmp_path / "run_0000.h5")
+    with h5py.File(path, "a") as f:
+        del f.attrs["case"]
+
+    with pytest.raises(RunDataError, match="case"):
+        load_run(path)
+
+
+def test_missing_seed_attr_raises(tmp_path):
+    path = build_run(tmp_path / "run_0000.h5")
+    with h5py.File(path, "a") as f:
+        del f.attrs["seed"]
+
+    with pytest.raises(RunDataError, match="seed"):
+        load_run(path)
+
+
 def test_mismatched_t_s_raises(tmp_path):
     directory = build_campaign(tmp_path, n_runs=2)
     bad_path = directory / "run_0001.h5"
