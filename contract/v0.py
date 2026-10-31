@@ -1,141 +1,178 @@
-"""v0 recorded-run contract: schema and conformance checks.
+"""v0 recorded-run contract: one HDF5 file per campaign, nothing else.
 
-See `contract/README.md` for the documented format. Provisional — the format trade becomes an
+See `contract/README.md` for the documented layout. Provisional — the format trade becomes an
 ADR here when it matters, not at v0.
 """
 
-import json
+from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 
-import pandas as pd
+import h5py
+import numpy as np
 
 CONTRACT_VERSION = 0
 
-COLUMNS = [
-    "t_s",
-    "truth_sigma_1",
-    "truth_sigma_2",
-    "truth_sigma_3",
-    "truth_omega_1",
-    "truth_omega_2",
-    "truth_omega_3",
-    "truth_r_1",
-    "truth_r_2",
-    "truth_r_3",
-    "truth_v_1",
-    "truth_v_2",
-    "truth_v_3",
-    "est_sigma_1",
-    "est_sigma_2",
-    "est_sigma_3",
-    "est_r_1",
-    "est_r_2",
-    "est_r_3",
-    "est_v_1",
-    "est_v_2",
-    "est_v_3",
-    "gyro_1",
-    "gyro_2",
-    "gyro_3",
-    "accel_1",
-    "accel_2",
-    "accel_3",
+ROOT_ATTRS = [
+    "contract_version",
+    "producer",
+    "created_utc",
+    "seed",
+    "runs",
+    "versions_bsk",
+    "versions_gnc_algorithms",
+    "versions_wise_dynamics",
 ]
 
+# Dataset path within a run group -> (expected ndim, expected size of the last axis or None for
+# a 1-D dataset, expected `units` attribute).
+DATASETS: dict[str, tuple[int, int | None, str]] = {
+    "t_s": (1, None, "s"),
+    "truth/sigma_BN": (2, 3, "MRP"),
+    "truth/omega_BN_B": (2, 3, "rad/s"),
+    "truth/r_N": (2, 3, "m"),
+    "truth/v_N": (2, 3, "m/s"),
+    "est/sigma_BN": (2, 3, "MRP"),
+    "est/r_N": (2, 3, "m"),
+    "est/v_N": (2, 3, "m/s"),
+    "imu/gyro_P": (2, 3, "rad/s"),
+    "imu/accel_P": (2, 3, "m/s^2"),
+}
 
-def check_run_file(path: str | Path) -> list[str]:
-    """Check one run_<NNNN>.csv against the v0 contract. Returns the problems found; an empty
-    list means the file conforms."""
+
+@dataclass(frozen=True)
+class RunArrays:
+    """One run's datasets, exactly as named under its /runs/<NNNN> group."""
+
+    t_s: np.ndarray
+    truth_sigma_BN: np.ndarray
+    truth_omega_BN_B: np.ndarray
+    truth_r_N: np.ndarray
+    truth_v_N: np.ndarray
+    est_sigma_BN: np.ndarray
+    est_r_N: np.ndarray
+    est_v_N: np.ndarray
+    imu_gyro_P: np.ndarray
+    imu_accel_P: np.ndarray
+
+
+def _check_run_group(group: h5py.Group, run_name: str) -> tuple[list[str], np.ndarray | None]:
+    """Check one /runs/<NNNN> group against the v0 contract. Returns the problems found and
+    that run's t_s array (None if it could not be read)."""
+    problems: list[str] = []
+    t_s: np.ndarray | None = None
+
+    for rel_path, (ndim, last_dim, units) in DATASETS.items():
+        if rel_path not in group:
+            problems.append(f"run {run_name}: missing dataset '{rel_path}'")
+            continue
+
+        dataset = group[rel_path]
+        data = dataset[()]
+
+        if dataset.dtype != np.float64:
+            problems.append(
+                f"run {run_name}: dataset '{rel_path}' has dtype {dataset.dtype}, expected float64"
+            )
+
+        shape_ok = data.ndim == ndim and (last_dim is None or data.shape[-1] == last_dim)
+        if not shape_ok:
+            expected = "(N,)" if last_dim is None else f"(N, {last_dim})"
+            problems.append(
+                f"run {run_name}: dataset '{rel_path}' has shape {data.shape}, expected {expected}"
+            )
+
+        actual_units = dataset.attrs.get("units")
+        if actual_units != units:
+            problems.append(
+                f"run {run_name}: dataset '{rel_path}' has units {actual_units!r}, "
+                f"expected {units!r}"
+            )
+
+        if np.isnan(data).any():
+            problems.append(f"run {run_name}: dataset '{rel_path}' contains NaN")
+
+        if rel_path == "t_s" and shape_ok:
+            t_s = data
+            not_increasing_from_zero = (
+                data.size == 0 or data[0] != 0 or (data.size > 1 and (data[1:] <= data[:-1]).any())
+            )
+            if not_increasing_from_zero:
+                problems.append(f"run {run_name}: t_s is not strictly increasing from 0")
+
+    return problems, t_s
+
+
+def check_campaign(path: str | Path) -> list[str]:
+    """Check one campaign.h5 against the v0 contract. Returns the problems found; an empty list
+    means the campaign conforms."""
     path = Path(path)
-
     if not path.is_file():
         return [f"{path}: file does not exist"]
 
     try:
-        df = pd.read_csv(path)
-    except Exception as exc:
-        return [f"{path}: could not be parsed as CSV ({exc})"]
+        handle = h5py.File(path, "r")
+    except OSError as exc:
+        return [f"{path}: could not be opened as HDF5 ({exc})"]
 
-    problems: list[str] = []
+    with handle as f:
+        problems: list[str] = []
 
-    actual = df.columns.tolist()
-    if actual != COLUMNS:
-        missing = [c for c in COLUMNS if c not in actual]
-        extra = [c for c in actual if c not in COLUMNS]
-        if missing:
-            problems.append(f"{path}: missing columns {missing}")
-        if extra:
-            problems.append(f"{path}: unexpected columns {extra}")
-        if not missing and not extra:
-            problems.append(
-                f"{path}: columns are present but out of order, expected {COLUMNS}, got {actual}"
+        for attr in ROOT_ATTRS:
+            if attr not in f.attrs:
+                problems.append(f"{path}: missing root attr '{attr}'")
+
+        if "runs" not in f:
+            problems.append(f"{path}: missing '/runs' group")
+            return problems
+
+        runs_group = f["runs"]
+        run_names = sorted(runs_group.keys())
+
+        runs_attr = f.attrs.get("runs")
+        if runs_attr is not None:
+            runs_attr = int(runs_attr)
+            if len(run_names) != runs_attr:
+                problems.append(
+                    f"{path}: 'runs' attr is {runs_attr}, but {len(run_names)} run "
+                    f"group(s) exist on disk: {run_names}"
+                )
+            expected_names = {f"{i:04d}" for i in range(runs_attr)}
+            for missing_name in sorted(expected_names - set(run_names)):
+                problems.append(f"{path}: missing run group '{missing_name}'")
+
+        reference_t_s = None
+        reference_run = None
+        for run_name in run_names:
+            group_problems, t_s = _check_run_group(runs_group[run_name], run_name)
+            problems.extend(group_problems)
+            if t_s is not None:
+                if reference_t_s is None:
+                    reference_t_s, reference_run = t_s, run_name
+                elif not np.array_equal(t_s, reference_t_s):
+                    problems.append(
+                        f"{path}: run '{run_name}' t_s differs from run '{reference_run}' t_s"
+                    )
+
+    return problems
+
+
+def load_campaign(path: str | Path) -> Iterator[RunArrays]:
+    """Yield one RunArrays per run group in campaign.h5, in run order."""
+    path = Path(path)
+    with h5py.File(path, "r") as f:
+        runs_group = f["runs"]
+        for run_name in sorted(runs_group.keys()):
+            group = runs_group[run_name]
+            yield RunArrays(
+                t_s=group["t_s"][()],
+                truth_sigma_BN=group["truth/sigma_BN"][()],
+                truth_omega_BN_B=group["truth/omega_BN_B"][()],
+                truth_r_N=group["truth/r_N"][()],
+                truth_v_N=group["truth/v_N"][()],
+                est_sigma_BN=group["est/sigma_BN"][()],
+                est_r_N=group["est/r_N"][()],
+                est_v_N=group["est/v_N"][()],
+                imu_gyro_P=group["imu/gyro_P"][()],
+                imu_accel_P=group["imu/accel_P"][()],
             )
-        return problems
-
-    if df.empty:
-        return [f"{path}: has no data rows"]
-
-    t = df["t_s"].to_numpy()
-    if t[0] != 0:
-        problems.append(f"{path}: t_s does not start at 0 (starts at {t[0]})")
-    if (t[1:] <= t[:-1]).any():
-        problems.append(f"{path}: t_s is not strictly increasing")
-
-    nan_columns = df.columns[df.isna().any()].tolist()
-    if nan_columns:
-        problems.append(f"{path}: NaN values in column(s) {nan_columns}")
-
-    return problems
-
-
-def check_campaign(campaign_dir: str | Path) -> list[str]:
-    """Check a campaign directory's manifest against the files it names, and each named run file
-    against the v0 contract. Returns the problems found; an empty list means the campaign
-    conforms."""
-    campaign_dir = Path(campaign_dir)
-    manifest_path = campaign_dir / "manifest.json"
-
-    if not manifest_path.is_file():
-        return [f"{manifest_path}: manifest.json does not exist"]
-
-    try:
-        manifest = json.loads(manifest_path.read_text())
-    except json.JSONDecodeError as exc:
-        return [f"{manifest_path}: could not be parsed as JSON ({exc})"]
-
-    problems: list[str] = []
-
-    if manifest.get("contract_version") != CONTRACT_VERSION:
-        problems.append(
-            f"{manifest_path}: contract_version is {manifest.get('contract_version')!r}, "
-            f"expected {CONTRACT_VERSION}"
-        )
-
-    runs = manifest.get("runs")
-    if not isinstance(runs, list) or not runs:
-        problems.append(f"{manifest_path}: 'runs' is missing or empty")
-        return problems
-
-    named_files: set[str] = set()
-    for entry in runs:
-        run_id = entry.get("run")
-        file_name = entry.get("file")
-        if not file_name:
-            problems.append(f"{manifest_path}: run {run_id} has no 'file' entry")
-            continue
-        named_files.add(file_name)
-        run_path = campaign_dir / file_name
-        if not run_path.is_file():
-            problems.append(f"{manifest_path}: run {run_id} names missing file {file_name}")
-            continue
-        problems.extend(check_run_file(run_path))
-
-    on_disk = {p.name for p in campaign_dir.glob("run_*.csv")}
-    orphans = sorted(on_disk - named_files)
-    if orphans:
-        problems.append(
-            f"{campaign_dir}: file(s) present but not referenced by any run in "
-            f"manifest.json: {orphans}"
-        )
-
-    return problems

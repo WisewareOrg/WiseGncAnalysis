@@ -1,67 +1,66 @@
 # Contract
 
 The recorded-run data contract every simulation exporter must satisfy, and the conformance
-checks in [`v0.py`](v0.py). **The format is provisional** — the format trade becomes an ADR here
+check in [`v0.py`](v0.py). **The layout is provisional** — the format trade becomes an ADR here
 when it matters, not at v0.
 
 ## v0
 
-A campaign is a directory holding one `manifest.json` and one `run_<NNNN>.csv` per run.
+A campaign is exactly one HDF5 file, `campaign.h5`. No CSV, no manifest, no sidecar files —
+everything the contract describes lives inside this one file (owner ruling, 2026-10-31).
 
-### Run file — `run_<NNNN>.csv`
-
-A header row followed by one data row per recorded sample, columns in exactly this order:
-
-| Column | Units | Meaning |
-| --- | --- | --- |
-| `t_s` | s | Sample time, strictly increasing, starting at 0 |
-| `truth_sigma_1`, `truth_sigma_2`, `truth_sigma_3` | MRP (dimensionless) | True attitude, body wrt inertial, σ_BN |
-| `truth_omega_1`, `truth_omega_2`, `truth_omega_3` | rad/s | True body-frame angular rate |
-| `truth_r_1`, `truth_r_2`, `truth_r_3` | m | True inertial position |
-| `truth_v_1`, `truth_v_2`, `truth_v_3` | m/s | True inertial velocity |
-| `est_sigma_1`, `est_sigma_2`, `est_sigma_3` | MRP (dimensionless) | Estimated attitude, body wrt inertial, σ_BN |
-| `est_r_1`, `est_r_2`, `est_r_3` | m | Estimated inertial position |
-| `est_v_1`, `est_v_2`, `est_v_3` | m/s | Estimated inertial velocity |
-| `gyro_1`, `gyro_2`, `gyro_3` | rad/s | Recorded gyro output, body frame |
-| `accel_1`, `accel_2`, `accel_3` | m/s² | Recorded accelerometer output, body frame |
-
-A column present under the wrong name, a different column order, a non-monotonic or
-non-zero-starting `t_s`, or a `NaN` anywhere in the file is a contract violation.
-
-### Manifest — `manifest.json`
-
-```json
-{
-  "contract_version": 0,
-  "producer": "<string>",
-  "created_utc": "<ISO 8601>",
-  "runs": [
-    {
-      "run": 0,
-      "file": "run_0000.csv",
-      "seeds": {"<task or module>": 0},
-      "dispersions": {"<dotted.name>": [0.0, 0.0, 0.0]}
-    }
-  ]
-}
+```
+campaign.h5
+  attrs (root): contract_version=0 (int), producer (str), created_utc (ISO 8601 str), seed (int),
+                runs (int), versions_bsk, versions_gnc_algorithms, versions_wise_dynamics (str)
+  /runs/<NNNN>/            one group per case, zero-padded 4
+     attrs: case (int), seed (int), and one attr per drawn quantity named draw_<name> (float array)
+     datasets, float64, with a string attr `units`:
+       t_s             (N,)    "s"        strictly increasing, t_s[0] == 0
+       truth/sigma_BN  (N,3)   "MRP"
+       truth/omega_BN_B(N,3)   "rad/s"
+       truth/r_N       (N,3)   "m"
+       truth/v_N       (N,3)   "m/s"
+       est/sigma_BN    (N,3)   "MRP"
+       est/r_N         (N,3)   "m"
+       est/v_N         (N,3)   "m/s"
+       imu/gyro_P      (N,3)   "rad/s"    sensor frame
+       imu/accel_P     (N,3)   "m/s^2"    sensor frame
 ```
 
-- `contract_version` — always `0` for this version.
-- `producer` — a free-form string identifying what wrote the campaign.
-- `created_utc` — an ISO 8601 timestamp.
-- `runs` — one entry per run, naming the run's index, its file, the RNG seeds it used (keyed by
-  whichever task or module drew them), and the dispersed values it was given (keyed by a dotted
-  name, scalar or per-axis).
+### Root attributes
 
-### Conformance checks
+| Attribute | Type | Meaning |
+| --- | --- | --- |
+| `contract_version` | int | Always `0` for this version |
+| `producer` | str | Free-form string identifying what wrote the campaign |
+| `created_utc` | str | ISO 8601 timestamp |
+| `seed` | int | The campaign-level seed the producer drew everything else from |
+| `runs` | int | The number of `/runs/<NNNN>` groups; must equal the number present |
+| `versions_bsk` | str | Basilisk version the producer ran |
+| `versions_gnc_algorithms` | str | `gnc-algorithms` version/revision the producer ran |
+| `versions_wise_dynamics` | str | `wise-dynamics` version/revision that produced the file |
 
-`check_run_file(path) -> list[str]` checks one run file: the file exists and parses as CSV, its
-columns match the table above by name and order, it has at least one data row, `t_s` starts at 0
-and is strictly increasing, and no column holds a `NaN`. It returns the list of problems found;
-an empty list means the file conforms.
+### Run groups — `/runs/<NNNN>`
 
-`check_campaign(campaign_dir) -> list[str]` checks a whole campaign in both directions:
-`manifest.json` exists and parses, its `contract_version` is `0`, every run it names has a file
-in the directory and that file passes `check_run_file`, and conversely every `run_*.csv` present
-in the directory is named by some run in the manifest. It returns the combined list of problems;
-an empty list means the campaign conforms and nothing on disk is unaccounted for.
+One group per case, named by its zero-padded 4-digit case index (`0000`, `0001`, ...). Each
+group's own attributes carry `case` (int) and `seed` (int), plus one `draw_<name>` attribute
+(a float array) per dispersed quantity the producer drew for that case.
+
+Each group holds the ten datasets in the layout above, all `float64`, each carrying a string
+`units` attribute with the value shown. `t_s` must start at 0 and be strictly increasing; every
+run in a campaign shares the same `t_s`. Extra datasets and attributes beyond these are allowed —
+a study may add its own channels — but nothing documented above may be missing, misshapen,
+mistyped, or NaN.
+
+### Conformance check
+
+`check_campaign(path) -> list[str]` checks a campaign.h5 file and returns the problems found; an
+empty list means the file conforms. It checks: every root attribute above is present; the `runs`
+attribute equals the number of `/runs/<NNNN>` groups actually present, and every group that
+number implies exists; every dataset in the layout above is present in every run group, with the
+right shape and dtype and the right `units` attribute; no dataset holds a `NaN`; every run's
+`t_s` starts at 0 and is strictly increasing; and every run's `t_s` matches every other run's.
+
+`load_campaign(path)` yields one `RunArrays` per run group, in run order, with the ten datasets
+above as plain numpy arrays.

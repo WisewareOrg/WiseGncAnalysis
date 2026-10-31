@@ -1,79 +1,77 @@
-import re
-from pathlib import Path
+import h5py
+import numpy as np
 
-import pandas as pd
-
-from contract.v0 import COLUMNS, check_campaign, check_run_file
+from contract.v0 import check_campaign
 from tests.synthetic import build_campaign
-
-README_PATH = Path(__file__).resolve().parents[1] / "contract" / "README.md"
 
 
 def test_good_campaign_conforms(tmp_path):
-    build_campaign(tmp_path, n_runs=3)
-    assert check_campaign(tmp_path) == []
+    path = build_campaign(tmp_path / "campaign.h5", n_runs=3)
+    assert check_campaign(path) == []
 
 
-def test_good_run_file_conforms(tmp_path):
-    build_campaign(tmp_path, n_runs=1)
-    assert check_run_file(tmp_path / "run_0000.csv") == []
+def test_missing_dataset_fails(tmp_path):
+    path = build_campaign(tmp_path / "campaign.h5", n_runs=2)
+    with h5py.File(path, "a") as f:
+        del f["runs/0000/truth/r_N"]
 
-
-def test_wrong_column_order_fails(tmp_path):
-    build_campaign(tmp_path, n_runs=1)
-    run_path = tmp_path / "run_0000.csv"
-    df = pd.read_csv(run_path)
-    cols = df.columns.tolist()
-    cols[1], cols[2] = cols[2], cols[1]
-    df[cols].to_csv(run_path, index=False)
-
-    problems = check_run_file(run_path)
+    problems = check_campaign(path)
     assert problems
-    assert any("out of order" in p for p in problems)
+    assert any("truth/r_N" in p for p in problems)
 
 
 def test_nan_fails(tmp_path):
-    build_campaign(tmp_path, n_runs=1)
-    run_path = tmp_path / "run_0000.csv"
-    df = pd.read_csv(run_path)
-    df.loc[2, "truth_sigma_1"] = float("nan")
-    df.to_csv(run_path, index=False)
+    path = build_campaign(tmp_path / "campaign.h5", n_runs=2)
+    with h5py.File(path, "a") as f:
+        dataset = f["runs/0000/truth/sigma_BN"]
+        data = dataset[()]
+        data[2, 0] = np.nan
+        dataset[...] = data
 
-    problems = check_run_file(run_path)
+    problems = check_campaign(path)
     assert problems
     assert any("NaN" in p for p in problems)
 
 
-def test_missing_file_named_in_manifest_fails(tmp_path):
-    build_campaign(tmp_path, n_runs=2)
-    (tmp_path / "run_0001.csv").unlink()
+def test_shuffled_t_s_fails(tmp_path):
+    path = build_campaign(tmp_path / "campaign.h5", n_runs=2)
+    with h5py.File(path, "a") as f:
+        dataset = f["runs/0000/t_s"]
+        rng = np.random.default_rng(1)
+        dataset[...] = rng.permutation(dataset[()])
 
-    problems = check_campaign(tmp_path)
+    problems = check_campaign(path)
     assert problems
-    assert any("run_0001.csv" in p for p in problems)
+    assert any("strictly increasing" in p for p in problems)
 
 
-def test_orphan_file_not_in_manifest_fails(tmp_path):
-    build_campaign(tmp_path, n_runs=2)
-    # A stray file the manifest never named, carrying its own contract defect (t_s doesn't
-    # start at 0) — check_campaign must flag the file itself, not just defer to a defect inside
-    # it that check_run_file happens to catch.
-    df = pd.read_csv(tmp_path / "run_0000.csv")
-    df.loc[0, "t_s"] = 1
-    df.to_csv(tmp_path / "run_0002.csv", index=False)
+def test_extra_uncounted_run_group_fails(tmp_path):
+    path = build_campaign(tmp_path / "campaign.h5", n_runs=2)
+    with h5py.File(path, "a") as f:
+        f.copy("runs/0000", "runs/0002")
+        # root 'runs' attr is left at 2, so group 0002 is on disk but uncounted.
 
-    problems = check_campaign(tmp_path)
+    problems = check_campaign(path)
     assert problems
-    assert any("run_0002.csv" in p for p in problems)
+    assert any("'runs' attr is 2" in p for p in problems)
 
 
-def test_readme_column_table_matches_columns():
-    columns_from_readme = []
-    for line in README_PATH.read_text().splitlines():
-        line = line.strip()
-        if not line.startswith("| `"):
-            continue
-        column_cell = line.split("|")[1]
-        columns_from_readme.extend(re.findall(r"`([^`]+)`", column_cell))
+def test_wrong_units_fails(tmp_path):
+    path = build_campaign(tmp_path / "campaign.h5", n_runs=2)
+    with h5py.File(path, "a") as f:
+        f["runs/0000/truth/r_N"].attrs["units"] = "ft"
 
-    assert columns_from_readme == COLUMNS
+    problems = check_campaign(path)
+    assert problems
+    assert any("units" in p for p in problems)
+
+
+def test_mismatched_t_s_between_runs_fails(tmp_path):
+    path = build_campaign(tmp_path / "campaign.h5", n_runs=2)
+    with h5py.File(path, "a") as f:
+        dataset = f["runs/0001/t_s"]
+        dataset[...] = dataset[()] + 0.5
+
+    problems = check_campaign(path)
+    assert problems
+    assert any("t_s differs" in p for p in problems)
